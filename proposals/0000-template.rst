@@ -14,25 +14,11 @@ This proposal is `discussed at this pull request <https://github.com/ghc-proposa
 
 .. contents::
 
-Notes on reStructuredText - delete this section before submitting
-==================================================================
-
-The proposals are submitted in reStructuredText format.  To get inline code, enclose text in double backticks, ``like this``.  To get block code, use a double colon and indent by at least one space
-
-::
-
- like this
- and
-
- this too
-
-To get hyperlinks, use backticks, angle brackets, and an underscore `like this <http://www.haskell.org/>`_.
-
 
 Explicit Specificity for Type Applications
 ==========================================
 
-Currently, the behavior of visible type application (via the ``TypeApplications`` language extension) requires type arguments to be given to a vislbly-type-applied term in an order determined by a stable topological sort on exactly those type and kind variables mentioned by the user in the provided type signature for the aforementioned term. Occasionally, this ordering requirement is counterintuitive, leading to confusing errors and necessarily cluttered source code.
+Currently, the behavior of visible type application (via the ``TypeApplications`` language extension) requires type arguments to be given to a vislbly-type-applied term in an order determined by a stable topological sort on exactly those type and kind variables mentioned by the user in the provided type signature for the aforementioned term. Occasionally, this ordering requirement is counterintuitive, leading to confusing non-local errors and necessarily cluttered source code.
 
 We propose to add new syntax to universal quantifiers which allows the implementor of a function intended to be type-applied to "hide" certain type arguments from visible type application. At every type-application site of a function so defined, all such hidden type arguments need not (and indeed cannot) be visibly instantiated by the caller. The intention is that the implementor will make use of this option when they anticipate that these hidden type arguments will always be inferrable at use sites from a combination of the non-hidden visibly specified type arguments and value arguments.
 
@@ -92,78 +78,148 @@ Arguably, this behavior is sensible in the majority of cases [NOTE: SCW believes
 
 Another consideration is that when users **do** realize that an additional argument needs to come first, it is necessary for them to supply it at every application site, even if it can always be inferred. In order to use ``f'`` in the same way as ``f``, users must write ``f' @_ @T`` for every type ``T :: K`` with an inferrable kind ``K``.
 
-While it might initially seem like this is a minor aesthetic concern, this second issue can become arbitrarily burdensome in more complicated examples like the following. Note that while many incorrect "naive" visible applications of the functions below will yield errors rather than silent changes in semantics as above, this need not be the case--similar situations could make it very easy to forget an argument ordering and create confusing errors far away from the problematic application site.
+While it might initially seem like this is a minor concern, this second issue can become arbitrarily burdensome in more complicated examples like the following.
 
-So, consider the following definitions:
-
-::
-
- data Proxy4 (x :: k) (y :: l) (z :: m) (a :: n) = P4
-
- g :: forall (d :: x (y (z a)) -> d x y z a). Proxy4 x y z a
- g = P4
-
- data D (x :: k -> Type) (y :: l -> k) (z :: m -> l) (a :: m) = D (x (y (z a)))
-
-The user of ``g`` might expect that the visible type application ``g @D`` is well-formed, but as we have seen above, it is not! The compiler tells us:
+Consider the following definitions:
 
 ::
 
-• Expecting four more arguments to ‘D’
-  Expected a type, but
-  ‘D’ has kind
-  ‘(k -> *) -> (k1 -> k) -> (k2 -> k1) -> k2 -> *’
-• In the type ‘D’
-  In the expression: g @D
+ data Proxy (x :: k) = P
 
-In order to visibly apply ``f`` to ``D``, we must write ``f @_ @_ @_ @_ @D``.
+ g :: forall (c :: x (y (z a)) -> d). Proxy d
+ g = P
 
-This issue becomes even more problematic should we wish to explicitly annotate the kind of ``x``, ``y``, ``z``, or ``a`` (perhaps for the purpose of documentation). We might wish we could give ``g``'s type signature as:
+ data D where
+   C :: x (y (z a)) -> D
 
-::
-
- g :: forall (d :: x (y (z a)) -> d x y z a) (x :: k -> Type) (y :: l -> k) (z :: m -> l) (a :: m). Proxy4 x y z a
-
-While previously the compiler was happy to let us use ``x``, ``y``, ``z``, and ``a`` without explicitly binding them, we are now given one error for each of these kind-annotated variables, of the form:
+The user of ``g`` might expect that the visible type application ``g @C`` is well-formed, but as we have seen above, it is not! The compiler tells us:
 
 ::
 
- Variable ‘x’ used as a kind variable before being bound
- as a type variable. Perhaps reorder your variables?
- the type signature for ‘g’
+    • Expected kind ‘x0 (y0 (z0 a0)) -> *’,
+        but ‘C’ has kind ‘x0 (y0 (z0 a0)) -> D’
+    • In the type ‘C’
+      In the expression: g @C
+      In an equation for ‘it’: it = g @C
+
+In order to visibly apply ``g`` to ``C``, we must write ``g @_ @_ @_ @_ @_ @C``, which has the type we would expect: ``Proxy D``.
+
+This issue becomes even more problematic should we wish to explicitly annotate the kind of ``x``, ``y``, ``z``, or ``a`` (perhaps for the purpose of documentation). We might wish we could give this type signature to ``g``:
+
+::
+
+ g :: forall (c :: x (y (z a)) -> d) (d :: Type) (x :: k -> Type) (y :: l -> k) (z :: m -> l) (a :: l) . Proxy d
+
+While previously the compiler was happy to let us use ``x``, ``y``, ``z``, and ``a`` without explicitly binding them, we are now given one error for each of these variables:
+
+::
+
+ error: Not in scope: type variable ‘x’
+ error: Not in scope: type variable ‘y’
+ error: Not in scope: type variable ‘z’
+ error: Not in scope: type variable ‘a’
+ error: Not in scope: type variable ‘d’
 
 Thus, in order to provide this more informative type signature, we are forced to write:
 
 ::
 
- g :: forall (x :: k -> Type) (y :: l -> k) (z :: m -> l) (a :: m) (d :: x (y (z a)) -> d x y z a). Proxy4 x y z a
+ g :: forall (x :: k -> Type) (y :: l -> k) (z :: m -> l) (a :: m) (c :: (x (y (z a))) -> d). Proxy d
 
-TODO: This currently results in a GHC internal error, and it really should not!! Proceeding below as if this bug is fixed...
-
-With this definition of f, we are now required to give a total of **seven** blank type arguments to ``g`` before we can visibly apply it to ``D``: ``k``, ``l``, ``m``, ``x``, ``y``, ``z``, ``a``:
+With this definition of f, we are now required to give a total of **eight** blank type arguments to ``g`` before we can visibly apply it to ``C``: ``k``, ``l``, ``m``, ``x``, ``y``, ``z``, ``a``, ``d``:
 
 ::
 
- g @_ @_ @_ @_ @_ @_ @_ @D
+ g @_ @_ @_ @_ @_ @_ @_ @_ @C
 
 Notice that this clutter results from a combination of issues: that implicitly bound kind variables (``k``, ``l``, ``m``) appear before their corresponding type variables due to the topological ordering imposed by visible type application; and that this is compounded by the binding rules requiring us to place all variables which have explicit kind signatures before their use site (but not if they don't have such signatures!).
 
-In this proposal, we introduce a syntax which allows the implementor of ``f`` to explicitly hide unnecessary (always inferrable) type and kind variables from type application, enabling succinctness at use sites and preventing confusing errors. More generally, we show how this feature can be used to arbitrarily permute the argument order for visible type application, if it is desired to reorder without completely hiding some variables.
+In this proposal, we introduce a syntax which allows the implementor of ``f`` to explicitly hide unnecessary (presumed always inferrable) type and kind variables from type application, enabling succinctness at use sites and preventing confusing errors. More generally, we show how this feature can be used to arbitrarily permute the argument order for visible type application, if it is desired to reorder without completely hiding some variables.
 
 
 Proposed Change Specification
 -----------------------------
-Specify the change in precise, comprehensive yet concise language. Avoid words like should or could. Strive for a complete definition. Your specification may include,
 
-* grammar and semantics of any new syntactic constructs
-* the types and semantics of any new library interfaces
-* how the proposed change interacts with existing language or compiler features, in case that is otherwise ambiguous
+We propose to implement the following new user-facing syntax in forall-binders on terms and datatype constructors.
 
-Note, however, that this section need not describe details of the implementation of the feature. The proposal is merely supposed to give a conceptual specification of the new feature and its behavior.
+In any explicit forall, it will be permissible to surround any argument in curly braces, to denote that this argument is to be excluded from visible type application at all use sites. For example, consider the following definitions:
 
+::
+
+ data Tagged k x (t :: k) = T x
+
+ f :: forall {k} (t :: k) x. x -> Tagged k x t
+ f = T
+
+The type of ``f @True`` is ``forall x. Tagged Bool True x``.
+
+We also allow kind annotations in curly-brace binders, as below:
+
+::
+
+ g :: forall {k :: Type} (t :: k). (Proxy k, Proxy t)
+ g = (P, P)
+
+The type of ``g @True`` is ``(Proxy Bool, Proxy True)``
+
+Likewise, this change extends to the definition of datatypes, notably GADTs. Consider the following definition:
+
+::
+
+ data D :: (Type -> Type) -> Type -> Type where
+   C :: forall {x} f. (x -> Bool) -> f x -> D f
+
+The type of ``C @[]`` is ``forall x. (x -> Bool) -> [x] -> D []``. (Note that in this case, this proposed syntax is not strictly necessary to achieve this effect; we may freely reorder ``x`` and ``f`` in the forall-binder of ``C`` because they are not at different levels of the topological order on dependency.)
+
+We claim that this is a conservative extension of GHC's grammar, as curly braces cannot appear anywhere in a forall-binder at present.
+
+If the implementor of some function or datatype wishes not to **hide** some argument entirely from visible application but merely to place it later (or, without loss of generality, earlier) in the order of arguments, this is immediately possible using only this syntax.
+
+Suppose we wish to make a polykinded proxy which can be visibly applied to both the type and the kind of its parameter, but which takes as a visible argument the type first and the kind second. That is, we wish to create something equivalent to the (illegal) definition:
+
+::
+
+ data FlipProxy (a :: k) k = FP
+
+We can do this as follows:
+
+::
+
+ data FlipProxy a where
+   FP :: forall {k} (a :: k) k1. (k ~ k1) => FlipProxy a k1
+
+This means that ``FP @True @Bool`` has type ``FlipProxy True Bool``, whereas ``FlipProxy True ()`` is ill-typed--the exact semantics we wanted to achieve.
+
+What's happening above? We initially hide the variable ``k`` from visible type application, but it is still brought into scope and so can be used to name the kind of ``a``. We then add an additional type argument ``k1`` which **is** visible to type application, and immediately constrain it to be equal to ``k``, forcing them to unify and make the result have type ``FlipProxy a k``.
+
+Similarly, we can arbitrarily permute the visible application order for any dependent telescope, whether in a function or a datatype constructor. In general, we can take an arbitrary forall-binder and permute its arguments by the following procedure:
+
+1. Add explicit bindings for every implicitly quantified variable (i.e. convert ``(a :: k)`` into ``k (a :: k)`` if no explicit binding for ``k`` exists).
+2. Convert every non-hidden variable binding into a hidden one, preserving kind annotations if such exist.
+3. Add N new visible bindings with a fresh name for each (no need for any kind signatures), where N is the number of names bound in the signature after [1].
+4. Add equality constraints between the new and old names so as to form a the desired permutation.
+
+As an example, consider how we might do this for the data constructor ``C`` from the datatype ``D``, seen earlier.
+
+::
+
+ data D where
+   C :: x (y (z a)) -> D
+
+ g :: forall (c :: x (y (z a)) -> d). Proxy d
+
+Here is how we transform the type signature of ``g`` according to the procedure above, step by step:
+
+1. ``g :: forall x y z a d (c :: x (y (z a)) -> d). Proxy d``
+2. ``g :: forall {x} {y} {z} {a} {d} {c :: x (y (z a)) -> d}. Proxy d``
+3. ``g :: forall {x} {y} {z} {a} {d} {c :: x (y (z a)) -> d} c' x' y' z' a' d'. Proxy d``
+4. ``g :: forall {x} {y} {z} {a} {d} {c :: x (y (z a)) -> d} c' x' y' z' a' d'. (c ~ c', x ~ x', y ~ y', z ~ z', a ~ a', d ~ d') => Proxy d``
+
+Note that while this general solution always exists, in non-pathological cases there is usually a way to permute the bound variables without introducing N new names and equality constraints.
 
 Effect and Interactions
 -----------------------
+
 Detail how the proposed change addresses the original problem raised in the motivation.
 
 Discuss possibly contentious interactions with existing language or compiler features.
@@ -171,16 +227,19 @@ Discuss possibly contentious interactions with existing language or compiler fea
 
 Costs and Drawbacks
 -------------------
+
 Give an estimate on development and maintenance costs. List how this effects learnability of the language for novice users. Define and list any remaining drawbacks that cannot be resolved.
 
 
 Alternatives
 ------------
+
 List existing alternatives to your proposed change as they currently exist and discuss why they are insufficient.
 
 
 Unresolved questions
 --------------------
+
 Explicitly list any remaining issues that remain in the conceptual design and specification. Be upfront and trust that the community will help. Please do not list *implementation* issues.
 
 Hopefully this section will be empty by the time the proposal is brought to the steering committee.
@@ -188,4 +247,5 @@ Hopefully this section will be empty by the time the proposal is brought to the 
 
 Implementation Plan
 -------------------
-(Optional) If accepted who will implement the change? Which other ressources and prerequisites are required for implementation?
+
+I will implement this plan, under the supervision of Richard Eisenberg and Stephanie Weirich.
